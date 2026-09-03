@@ -3,6 +3,10 @@
 	auto_https off
 	skip_install_trust
 
+	pki {
+		ca local
+	}
+
 	servers :3000 {
 		listener_wrappers {
 			http_redirect
