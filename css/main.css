@@ -13,3 +13,8 @@
   width: 20rem;
   max-width: 100%;
 }
+
+#camera-player,
+#camera-overlay {
+  object-fit: cover;
+}

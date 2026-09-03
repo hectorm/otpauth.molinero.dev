@@ -1,7 +1,7 @@
 import * as OTPAuth from "otpauth";
 import encodeQR from "qr";
 import decodeQR from "qr/decode.js";
-import { QRCanvas, frontalCamera, frameLoop } from "qr/dom.js";
+import { QRCanvas, QRCamera, frameLoop } from "qr/dom.js";
 
 const $settings = document.querySelector("#settings");
 const $code = document.querySelector("#code");
@@ -32,7 +32,13 @@ const generate = () => {
   $code.value = totp.generate();
   $uri.value = totp.toString();
 
-  const qr = encodeQR($uri.value, "svg", { ecc: "medium", scale: 1, border: 1 });
+  const svg = new DOMParser().parseFromString(
+    encodeQR($uri.value, "svg", { ecc: "medium", scale: 1, border: 1 }),
+    "image/svg+xml",
+  );
+  svg.documentElement.setAttribute("shape-rendering", "crispEdges");
+
+  const qr = new XMLSerializer().serializeToString(svg);
   $qr.src = URL.createObjectURL(new Blob([qr], { type: "image/svg+xml" }));
 };
 
@@ -182,13 +188,30 @@ let camera = null;
 let cameraCanvas = null;
 let cameraLoopCancel = null;
 
-const cameraLoop = () => {
-  let scanned = false;
-  return frameLoop(() => {
-    if (scanned || $cameraPlayer.videoWidth === 0) return;
+const acquireCamera = async (deviceId) => {
+  if (camera) camera.stop();
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      ...(deviceId
+        ? { deviceId: { exact: deviceId } }
+        : { facingMode: "environment" }),
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
+  });
+  camera = new QRCamera($cameraPlayer, stream);
+  return camera;
+};
 
-    const data = camera.readFrame(cameraCanvas, true);
-    if (!data) return;
+const cameraLoop = (player) => {
+  let scanned = false;
+  let reading = false;
+  return frameLoop(async () => {
+    if (scanned || reading || player.videoWidth === 0) return;
+
+    reading = true;
+    const data = await camera.readFrame(cameraCanvas).finally(() => (reading = false));
+    if (scanned || !data) return;
 
     try {
       load(OTPAuth.URI.parse(data));
@@ -202,25 +225,22 @@ const cameraLoop = () => {
         globalThis.bootstrap.Modal.getOrCreateInstance($cameraModal).hide();
       }, 100);
     }
-  });
+  }, player);
 };
 
 $cameraModal.addEventListener("show.bs.modal", async () => {
   try {
-    camera ??= await frontalCamera($cameraPlayer);
+    camera = await acquireCamera();
     cameraCanvas ??= new QRCanvas({
       overlay: $cameraOverlay,
     }, {
       overlayMainColor: "rgba(0, 255, 0, 0.5)",
       overlayFinderColor: "rgba(0, 0, 255, 0.5)",
       overlaySideColor: "rgba(0, 0, 0, 0)",
-      cropToSquare: false,
+      cropToSquare: true,
     });
 
     const activeDeviceId = camera.stream.getVideoTracks()[0]?.getSettings().deviceId;
-
-    // Force reload to set video size correctly
-    if (activeDeviceId) camera.setDevice(activeDeviceId);
 
     $cameraList.innerHTML = "";
     for (const device of await camera.listDevices()) {
@@ -249,12 +269,12 @@ $cameraModal.addEventListener("hide.bs.modal", () => {
 
 $cameraPlayer.addEventListener("play", () => {
   if (cameraLoopCancel) cameraLoopCancel();
-  cameraLoopCancel = cameraLoop();
+  cameraLoopCancel = cameraLoop($cameraPlayer);
 });
 
-$cameraList.addEventListener("change", (event) => {
+$cameraList.addEventListener("change", async (event) => {
   try {
-    camera?.setDevice(event.target.value);
+    await acquireCamera(event.target.value);
   } catch (error) {
     console.error(error);
     notify(error.message ?? error, "danger");
